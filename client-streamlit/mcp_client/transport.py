@@ -1,3 +1,4 @@
+# client-streamlit/mcp_client/transport.py
 import threading
 import time
 import json
@@ -86,12 +87,22 @@ class MCPTransport:
                                 if rpc_id and rpc_id in self._canceled:
                                     continue
 
-                                # ★ まずは受信ボックスに溜める（UIはここをポーリング/ドレイン）
+                                # --- 非同期用 inbox 更新 ---
                                 with self._lock:
                                     if rpc_id:
                                         self._inbox[rpc_id].append(payload)
 
-                                # （任意）コールバックも残すが、ここではUIを直接触らない設計に
+                                # --- ★ 同期待ち中なら waiter に結果をセット ---
+                                with self._lock:
+                                    if rpc_id in self._pending:
+                                        waiter = self._pending[rpc_id]
+                                        if "error" in payload:
+                                            waiter["error"] = payload["error"]
+                                        else:
+                                            waiter["result"] = payload.get("result")
+                                        waiter["event"].set()  # ★ ここでメインスレッドに「来たよ！」を通知！
+
+                                # --- コールバック呼び出し（任意） ---
                                 cb = self._callbacks.get(rpc_id)
                                 if cb:
                                     try:
