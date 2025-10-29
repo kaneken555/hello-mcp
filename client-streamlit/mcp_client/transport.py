@@ -5,7 +5,8 @@ import uuid
 import requests
 from sseclient import SSEClient
 from urllib.parse import urlparse, urljoin
-from typing import Callable, Dict, Optional, Any
+from typing import Callable, Dict, Optional, Any, List
+from collections import defaultdict
 
 SSE_EVENT_ENDPOINT = "endpoint"
 SSE_EVENT_MESSAGE = "message"
@@ -46,6 +47,9 @@ class MCPTransport:
         # 簡易キャンセル管理（クライアント側のみ。実運用はサーバのcancel対応が必要）
         self._canceled: set[str] = set()
 
+        # 受信ボックス: id -> [payload_dict, ...]
+        self._inbox: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
     # ---------- 基本ユーティリティ ----------
 
     def _resolve_post_url(self, endpoint_path: str) -> str:
@@ -79,29 +83,21 @@ class MCPTransport:
                                 payload = json.loads(ev.data)
                                 rpc_id = payload.get("id")
 
-                                # --- キャンセル済みなら破棄 ---
                                 if rpc_id and rpc_id in self._canceled:
                                     continue
 
-                                # 1) 同期待ちの人へ
+                                # ★ まずは受信ボックスに溜める（UIはここをポーリング/ドレイン）
                                 with self._lock:
-                                    waiter = self._pending.get(rpc_id)
-                                    if waiter:
-                                        if "error" in payload:
-                                            waiter["error"] = payload["error"]
-                                        else:
-                                            # message or progress いずれも result/params などをそのまま格納
-                                            waiter["result"] = payload.get("result") or payload
-                                        waiter["event"].set()
+                                    if rpc_id:
+                                        self._inbox[rpc_id].append(payload)
 
-                                # 2) 非同期コールバックへ
+                                # （任意）コールバックも残すが、ここではUIを直接触らない設計に
                                 cb = self._callbacks.get(rpc_id)
                                 if cb:
                                     try:
                                         cb(payload)
                                     except Exception:
                                         pass
-
                             except Exception:
                                 pass
 
@@ -116,10 +112,18 @@ class MCPTransport:
                         entry["error"] = {"code": -1, "message": "SSE disconnected"}
                         entry["event"].set()
                     self._pending.clear()
+                    self._inbox.clear()   # ★ 切断時はクリア
 
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
         return True
+
+    # ★ UI側から取り出すAPI（取り出し時に空にする＝ドレイン）
+    def drain_inbox(self, request_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            items = list(self._inbox.get(request_id, []))
+            self._inbox[request_id].clear()
+            return items
 
     def disconnect_sse(self):
         self._stop.set()

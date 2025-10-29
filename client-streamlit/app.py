@@ -67,7 +67,7 @@ st.divider()
 
 # ---------- ツール入力 ----------
 tool = st.text_input("Tool name", value="say_hello")
-params_text = st.text_area("Parameters (JSON)", value='{"name": "Ken"}', height=120)
+params_text = st.text_area("Parameters (JSON)", value='{"name": "taro"}', height=120)
 
 # ---------- 同期版：1クリックで完了 ----------
 st.subheader("🟢 Sync call（1クリックで完了・推奨）")
@@ -113,6 +113,11 @@ with col1:
             st.info(f"非同期リクエスト開始: {req_id}")
             st.session_state.transport.call_tool_async(tool, args, request_id=req_id)
 
+    # ↓ 自動/手動リフレッシュUIを追加
+    auto = st.checkbox("Auto refresh async panel (1s)", value=False)
+    if auto:
+        st_autorefresh(interval=1000, key="async_auto_refresh")
+
 with col2:
     # 表示対象IDの選択
     req_id = st.session_state.last_async_id
@@ -121,7 +126,12 @@ with col2:
     if target_id:
         req_id = target_id
 
-    # ここを「payloadsが空でもUIが出る」ように微修正
+    if req_id:
+        # ★ ここがポイント：transport の受信ボックスから新着を取り出して合流
+        new_payloads = st.session_state.transport.drain_inbox(req_id)
+        if new_payloads:
+            st.session_state.async_payloads.setdefault(req_id, []).extend(new_payloads)
+
     if req_id and req_id in st.session_state.async_payloads:
         payloads = st.session_state.async_payloads[req_id]
         st.caption(f"受信数: {len(payloads)}")
@@ -132,7 +142,6 @@ with col2:
         else:
             st.caption("（まだ受信はありません。到着すると自動/手動リフレッシュで表示されます）")
 
-        # Stopは常に表示（payload有無に依らない）
         if st.button("Stop listen (off_message)"):
             st.session_state.transport.off_message(req_id)
             st.success(f"Stopped listening: {req_id}")

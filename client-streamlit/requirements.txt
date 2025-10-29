@@ -2,3 +2,4 @@ streamlit
 requests
 sseclient-py
 python-dotenv
+streamlit-autorefresh
